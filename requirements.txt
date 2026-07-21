@@ -1,0 +1,5 @@
+streamlit
+PyMuPDF
+edge-tts
+asyncio
+google-genai
