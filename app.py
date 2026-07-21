@@ -121,14 +121,12 @@ def generate_gemini_summary(text, api_key):
 
 
 # Sidebar Configuration
-st.sidebar.header("🔑 API Authentication")
-# Look for the secret key securely in the server environment
-api_key_env = st.secrets.get("GEMINI_API_KEY", "")
-gemini_key = st.sidebar.text_input(
-    "Gemini API Key", value=api_key_env, type="password"
-)
-
 st.sidebar.header("🎛️ Audio Settings")
+
+# Silently fetch the key from the server secrets in the background (Never display it on screen)
+gemini_key = st.secrets.get("GEMINI_API_KEY", "")
+
+
 voices_dict = {
     "🇦🇺 AU English (Female - Natascha)": "en-AU-NataschaNeural",
     "🇦🇺 AU English (Male - William)": "en-AU-WilliamNeural",
