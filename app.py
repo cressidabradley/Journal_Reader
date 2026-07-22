@@ -85,11 +85,54 @@ def skip_academic_references(text):
 
 
 # Async function to generate AI Speech
+# Smarter Audio Generation using a Chunking Loop ---
 async def generate_speech(text, voice, speed):
+    # Generates a unique filename to prevent server conflicts on Streamlit Cloud
     unique_id = uuid.uuid4().hex[:8]
     output_filename = f"journal_audio_{unique_id}.mp3"
-    communicate = edge_tts.Communicate(text, voice, rate=speed)
-    await communicate.save(output_filename)
+
+    # Split the dense academic text into manageable sentence-based chunks
+    # This splits by full stops, exclamation marks, or question marks, followed by a space
+    text_chunks = re.split(r"(?<=[.!?])\s+", text)
+
+    # Group small sentences together into structural blocks (Max ~1500 characters per block)
+    # This ensures we stay way below Microsoft's server overflow limit while keeping calls fast
+    grouped_chunks = []
+    current_chunk = ""
+
+    for sentence in text_chunks:
+        if len(current_chunk) + len(sentence) < 1500:
+            current_chunk += " " + sentence
+        else:
+            if current_chunk.strip():
+                grouped_chunks.append(current_chunk.strip())
+            current_chunk = sentence
+
+    if current_chunk.strip():
+        grouped_chunks.append(current_chunk.strip())
+
+    # Create the final destination file to dump our incoming audio data into
+    with open(output_filename, "wb") as final_audio_file:
+        # Loop through each individual text block one-by-one
+        for index, chunk_text in enumerate(grouped_chunks):
+            if not chunk_text.strip():
+                continue
+
+            try:
+                # Trigger the edge-tts stream for just this specific small chunk
+                communicate = edge_tts.Communicate(chunk_text, voice, rate=speed)
+
+                # Iterate through the incoming audio packet data and append it directly to our file
+                async for chunk in communicate.stream():
+                    if chunk["type"] == "audio":
+                        final_audio_file.write(chunk["data"])
+
+            except Exception as e:
+                # Log the specific block error context but allow the stream to recover if possible
+                raise RuntimeError(
+                    f"Audio generation failed at segment {index + 1}/{len(grouped_chunks)}. Error: {str(e)}"
+                )
+
     return output_filename
 
 
@@ -110,7 +153,7 @@ def generate_gemini_summary(text, api_key):
             f"Here is the text to summarise:\n\n{text}"
         )
 
-        # Call the efficient and affordable gemini-1.5-flash model
+        # Call the current gemini-3.6-flash model
         response = client.models.generate_content(
             model="gemini-3.6-flash",
             contents=prompt,
