@@ -112,7 +112,7 @@ def generate_gemini_summary(text, api_key):
 
         # Call the efficient and affordable gemini-1.5-flash model
         response = client.models.generate_content(
-            model="gemini-1.5-flash",
+            model="gemini-2.5-flash",
             contents=prompt,
         )
         return response.text
