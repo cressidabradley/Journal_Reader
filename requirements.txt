@@ -1,5 +1,6 @@
 streamlit
 PyMuPDF
-edge-tts
+gTTS
 asyncio
 google-genai
+
