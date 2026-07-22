@@ -1,11 +1,10 @@
-import asyncio
 import datetime
 import os
 import re
 import uuid
 from google import genai
-import edge_tts
 import fitz  # PyMuPDF
+from gtts import gTTS
 import streamlit as st
 
 # Configure the Streamlit Page
@@ -38,7 +37,7 @@ def cleanup_old_audio_files(max_age_minutes=10):
                 pass  # Avoid crashing if a file is currently being locked/read by a user
 
 
-# Run the cleanup every time the app updates or a button is clicked
+# Run the cleanup loop every time the app updates or a button is clicked
 cleanup_old_audio_files(max_age_minutes=10)
 
 
@@ -84,63 +83,28 @@ def skip_academic_references(text):
     return text.strip()
 
 
-# Async function to generate AI Speech
-# Smarter Audio Generation using a Chunking Loop ---
-async def generate_speech(text, voice, speed):
-    # Generates a unique filename to prevent server conflicts on Streamlit Cloud
+# --- FEATURE 2: BULLETPROOF GOOGLE TTS AUDIO GENERATION ---
+def generate_speech(text, tts_lang, tts_accent, speed_fast=False):
+    """Generates audio tracks via Google's official cloud endpoints."""
     unique_id = uuid.uuid4().hex[:8]
     output_filename = f"journal_audio_{unique_id}.mp3"
 
-    # Split the dense academic text into manageable sentence-based chunks
-    # This splits by full stops, exclamation marks, or question marks, followed by a space
-    text_chunks = re.split(r"(?<=[.!?])\s+", text)
+    # Compile the text using Google Text to Speech
+    # tld parameter handles local accents (e.g., 'com.au' for Australian)
+    tts = gTTS(text=text, lang=tts_lang, tld=tts_accent, slow=False)
 
-    # Group small sentences together into structural blocks (Max ~1500 characters per block)
-    # This ensures we stay way below Microsoft's server overflow limit while keeping calls fast
-    grouped_chunks = []
-    current_chunk = ""
+    # Save the file down to the Streamlit local disk space
+    tts.save(output_filename)
 
-    for sentence in text_chunks:
-        if len(current_chunk) + len(sentence) < 1500:
-            current_chunk += " " + sentence
-        else:
-            if current_chunk.strip():
-                grouped_chunks.append(current_chunk.strip())
-            current_chunk = sentence
-
-    if current_chunk.strip():
-        grouped_chunks.append(current_chunk.strip())
-
-    # Create the final destination file to dump our incoming audio data into
-    with open(output_filename, "wb") as final_audio_file:
-        # Loop through each individual text block one-by-one
-        for index, chunk_text in enumerate(grouped_chunks):
-            if not chunk_text.strip():
-                continue
-
-            try:
-                # Trigger the edge-tts stream for just this specific small chunk
-                communicate = edge_tts.Communicate(chunk_text, voice, rate=speed)
-
-                # Iterate through the incoming audio packet data and append it directly to our file
-                async for chunk in communicate.stream():
-                    if chunk["type"] == "audio":
-                        final_audio_file.write(chunk["data"])
-
-            except Exception as e:
-                # Log the specific block error context but allow the stream to recover if possible
-                raise RuntimeError(
-                    f"Audio generation failed at segment {index + 1}/{len(grouped_chunks)}. Error: {str(e)}"
-                )
-
+    # Note: gTTS doesn't support micro-slider speed adjustments (like +25%).
+    # It has a standard "Normal" speed and an intentional "Slow" toggle for accessibility.
     return output_filename
 
 
-# --- FEATURE 2: GEMINI AI SUMMARISATION ENGINE ---
+# --- FEATURE 3: GEMINI AI SUMMARISATION ENGINE ---
 def generate_gemini_summary(text, api_key):
     """Sends extracted text to Gemini to create structural, copy-pasteable university study notes."""
     try:
-        # Initialise the modern GenAI client with your API key
         client = genai.Client(api_key=api_key)
 
         prompt = (
@@ -153,7 +117,6 @@ def generate_gemini_summary(text, api_key):
             f"Here is the text to summarise:\n\n{text}"
         )
 
-        # Call the current gemini-3.6-flash model
         response = client.models.generate_content(
             model="gemini-3.6-flash",
             contents=prompt,
@@ -166,22 +129,18 @@ def generate_gemini_summary(text, api_key):
 # Sidebar Configuration
 st.sidebar.header("🎛️ Audio Settings")
 
-# Silently fetch the key from the server secrets in the background (Never display it on screen)
+# Silently fetch your prepaid key from the backend environment
 gemini_key = st.secrets.get("GEMINI_API_KEY", "")
 
-
+# Google Accent Mapping
 voices_dict = {
-    "🇦🇺 AU English (Female - Natascha)": "en-AU-NataschaNeural",
-    "🇦🇺 AU English (Male - William)": "en-AU-WilliamNeural",
-    "🇺🇸 US English (Female - Aria)": "en-US-AriaNeural",
-    "🇺🇸 US English (Male - Guy)": "en-US-GuyNeural",
-    "🇬🇧 UK English (Female - Sonia)": "en-GB-SoniaNeural",
+    "🇦🇺 Australian English": {"lang": "en", "tld": "com.au"},
+    "🇬🇧 British English": {"lang": "en", "tld": "co.uk"},
+    "🇺🇸 American English": {"lang": "en", "tld": "com"},
 }
-selected_voice_label = st.sidebar.selectbox("Choose AI Voice", list(voices_dict.keys()))
-voice_id = voices_dict[selected_voice_label]
-
-speed_val = st.sidebar.slider("Reading Speed (%)", -50, 50, 20, step=5)
-speed_str = f"{'+' if speed_val >= 0 else ''}{speed_val}%"
+selected_voice = st.sidebar.selectbox("Choose AI Accent", list(voices_dict.keys()))
+lang_code = voices_dict[selected_voice]["lang"]
+tld_code = voices_dict[selected_voice]["tld"]
 
 st.sidebar.markdown("---")
 st.sidebar.header("📝 Text Filtering")
@@ -189,7 +148,7 @@ skip_refs = st.sidebar.checkbox("Enable Reference Skipper", value=True)
 
 # Main Layout: File Uploader
 uploaded_file = st.file_uploader(
-    "Step 1: Upload your Uni Journal Article (PDF)", type=["pdf"]
+    "Step 1: Upload your Journal Article (PDF)", type=["pdf"]
 )
 
 if uploaded_file:
@@ -235,7 +194,9 @@ if uploaded_file:
             with left_col:
                 st.subheader("💡 Option A: AI Study Summary")
                 if not gemini_key:
-                    st.info("ℹ️ Enter your Gemini API key in the sidebar to generate study notes.")
+                    st.info(
+                        "ℹ️ Ensure your GEMINI_API_KEY is configured in your Streamlit Cloud Secrets dashboard."
+                    )
                 else:
                     if st.button("✨ Generate AI Study Notes"):
                         with st.spinner("Gemini is reading the text..."):
@@ -245,20 +206,18 @@ if uploaded_file:
                             st.session_state["ai_summary"] = summary_result
 
                 if "ai_summary" in st.session_state:
-                    # Renders beautiful markdown notes with an automatic native copy-paste icon!
                     st.markdown(st.session_state["ai_summary"])
 
             with right_col:
                 st.subheader("🔊 Option B: Generate AI Audio narration")
                 if st.button("🎬 Generate Audio Track"):
-                    with st.spinner("Generating AI narration..."):
+                    with st.spinner("Generating stable Google AI narration..."):
                         try:
-                            audio_file = asyncio.run(
-                                generate_speech(
-                                    st.session_state["extracted_text"],
-                                    voice_id,
-                                    speed_str,
-                                )
+                            # Generate speech via official Google endpoints
+                            audio_file = generate_speech(
+                                st.session_state["extracted_text"],
+                                lang_code,
+                                tld_code,
                             )
 
                             st.audio(audio_file, format="audio/mp3")
